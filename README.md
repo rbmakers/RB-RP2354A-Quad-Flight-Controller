@@ -1,4 +1,4 @@
-# RB-RP2354A 四軸飛行器飛控板
+# RB-RP2354A 四軸無人機飛控板
 
 > **基於 Raspberry Pi RP2354A 的完整開源飛控韌體，達到 Betaflight 級別的飛行性能。**  
 > 同一套硬體同時支援 65 mm 有刷空心杯 TinyWhoop 與 2″–5″ 無刷 BLDC 競速機。
