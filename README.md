@@ -2,6 +2,8 @@
 
 > **基於 Raspberry Pi RP2354A 的完整開源飛控韌體，達到 Betaflight 級別的飛行性能。**  
 > 同一套硬體同時支援 65 mm 有刷空心杯 TinyWhoop 與 2″–5″ 無刷 BLDC 競速機。
+<img width="317" height="350" alt="image" src="https://github.com/user-attachments/assets/96cb408d-ba88-4a61-80c9-046b7cf901d5" />
+<img width="317" height="350" alt="image" src="https://github.com/user-attachments/assets/2969ec5f-2884-4f79-8078-231ea0adf82e" />
 
 ---
 
