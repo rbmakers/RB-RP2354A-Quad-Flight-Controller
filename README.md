@@ -2,8 +2,10 @@
 
 > **基於 Raspberry Pi RP2354A 的飛控韌體**  
 > 同一套硬體同時支援 65 mm 有刷空心杯 TinyWhoop 與 2″–5″ 無刷 BLDC 競速機。
-<img width="317" height="350" alt="image" src="https://github.com/user-attachments/assets/96cb408d-ba88-4a61-80c9-046b7cf901d5" />
-<img width="317" height="350" alt="image" src="https://github.com/user-attachments/assets/2969ec5f-2884-4f79-8078-231ea0adf82e" />
+<img width="317" height="350" alt="image" src="https://github.com/user-attachments/assets/bcbb476a-02b2-45c4-8652-bb90503be84a" />
+<img width="317" height="350" alt="image" src="https://github.com/user-attachments/assets/fe35a496-1230-488a-b498-8b598885fea3" />
+
+
 
 ---
 
