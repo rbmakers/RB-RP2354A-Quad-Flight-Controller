@@ -723,6 +723,161 @@ Kp_outer  = 6.0 + (100 - 40) x 0.025 = 6.0 + 1.50  = 7.5
 
 ---
 
+## 與 Betaflight 的功能對照討論
+
+### 架構層面的對等性
+
+就系統架構而言，本韌體與 Betaflight 4.x 的核心設計高度吻合：
+
+| 架構要素 | Betaflight | 本韌體 | 說明 |
+|---|---|---|---|
+| 雙核心任務分離 | ✅ | ✅ | 飛控 / I/O 分離於不同核心 |
+| 2 kHz 陀螺儀 ISR | ✅ | ✅ | DRDY 中斷驅動，不依賴定時器 |
+| 1 kHz PID 迴路 | ✅ | ✅ | |
+| DShot ESC 協定 | ✅ DShot300/600/1200 | ✅ DShot600 PIO | |
+| Madgwick / Mahony AHRS | ✅ | ✅ Madgwick | |
+| 雙二階陀螺濾波器 | ✅ | ✅ | Direct Form II 轉置 |
+| RPM 陷波濾波器 | ✅ 雙向 DShot | 架構完整 | 需硬體校準 PIO 時序 |
+| 動態陷波濾波器 | ✅ 多峰追蹤 | ✅ 單峰（FFT） | |
+| CRSF / ExpressLRS 接收 | ✅ | ✅ 16 頻道全解碼 | |
+| MSP v1 協定 | ✅ | ✅ 主要指令子集 | 可連 Betaflight Configurator |
+| 高度保持（氣壓） | ✅ | ✅ | |
+| 飛行黑盒 | ✅ .bfl 格式 | ✅ 自定義 32 B 格式 | |
+| 開機自我測試 | 部分 | ✅ 8 項硬體驗證 | |
+| Acro / Angle 飛行模式 | ✅ | ✅ | |
+| 四級故障保護 | ✅ | ✅ | |
+
+---
+
+### 尚未實作的功能——對飛行體驗的影響等級
+
+#### 🔴 高影響——直接影響飛行手感
+
+##### 前饋控制（Feedforward）
+
+這是本韌體目前最重要的缺失功能，對競速飛行的影響尤為顯著。
+
+標準 PID 是**被動響應**的——它只在誤差*已經發生*之後才做出修正：
+
+> 誤差 = 設定值 − 量測值 → PID 在延遲後才反應
+
+前饋控制是**主動預測**的——飛手一動搖桿，修正量立即發出，無需等待誤差累積：
+
+> FF 輸出 = `Kff × d(setpoint)/dt` → 搖桿一動即刻響應
+
+Betaflight 完整的 PID 輸出為：
+
+> `Output = Kp·e + Ki·∫e dt + Kd·d(measurement)/dt + Kff·d(setpoint)/dt`
+
+在高速競速飛行中，前饋項的貢獻往往大於 Kp 項。沒有前饋，飛機永遠略微「追趕」搖桿——對拍攝用途影響不大，對競速則相當明顯。
+
+**實作方式：** 在 `pid_controller.h` 的 `PIDAxis` 結構體新增 `kff` 欄位，在 `pidAxisUpdate()` 中加入設定值導數項，並在 `config.h` 的預設塊新增：
+
+```c
+#define PID_ROLL_KFF   0.025f   // 起始值；BLDC: 建議 0.02–0.05
+```
+
+##### 積分項鬆弛（I-term Relax）
+
+快速打舵時，積分器會累積大量誤差。當搖桿回中後，這些積累的積分量會造成機體「彈回（bounce-back）」。Betaflight 在搖桿快速移動時自動壓制積分器：
+
+```c
+// 在 pidAxisUpdate() 積分之前：
+float setpointRate = fabsf((setpoint - lastSetpoint) / dt);
+float relaxFactor  = 1.0f - constrain(setpointRate / ITERM_RELAX_CUTOFF, 0.0f, 1.0f);
+integral += error * dt * relaxFactor;   // 快速打舵時積分被抑制
+```
+
+沒有此功能，Ki 值必須調得很低（容易漂移）或保持高值（翻滾後彈回）。
+
+##### 空氣模式（Airmode）
+
+Betaflight 的 Airmode 在油門為零時仍維持 PID 權威。當混控輸出中有馬達低於零時，所有馬達一起向上偏移，確保差異值（控制力）被保留：
+
+```c
+// 混控後：若任何馬達輸出低於零，整體上移
+float minOut = min({m1, m2, m3, m4});
+if (isAirmode && minOut < 0.0f) {
+    m1 -= minOut;  m2 -= minOut;
+    m3 -= minOut;  m4 -= minOut;
+}
+```
+
+沒有此功能，Acro 模式在低油門時飛機會失去控制響應。
+
+##### 油門 PID 衰減（TPA）
+
+BLDC 機體在高油門時，馬達轉速更高、響應更快，Kp 和 Kd 在此時等效增益更強，容易導致高油門震盪。Betaflight 的 TPA（Throttle PID Attenuation）依油門比例縮減 Kp/Kd：
+
+```c
+float tpaFactor = 1.0f - constrain((throttle - TPA_BREAKPOINT) * TPA_RATE, 0.0f, 0.6f);
+rollOut  *= tpaFactor;
+pitchOut *= tpaFactor;
+```
+
+沒有此功能，BLDC 機體通常需要將增益調低遷就高油門，犧牲低油門時的響應性。
+
+---
+
+#### 🟡 中等影響——影響調整品質與操控特性
+
+| 功能 | Betaflight | 本韌體 | 影響說明 |
+|---|---|---|---|
+| **推力線性化** | ✅ 補正馬達非線性推力曲線 | ❌ | 不同油門點 PID 感受不一致 |
+| **D 項設定值加權** | ✅ 可混合量測導數與設定值導數 | D 項僅用量測值 | 微分特性可調性較低 |
+| **完整 Rates 系統** | ✅ ACTUAL / QUICK / BF Rates 多曲線 | 部分：線性 + 單一 Expo | 手感客製化有限 |
+| **動態怠速（Dynamic Idle）** | ✅ 依陀螺儀活動量動態提升最低轉速 | ❌ 固定最低油門 | 馬達在負載下可能失步 |
+| **墜機偵測與翻轉復原** | ✅ | ❌ | 墜機後需手動復原 |
+| **Anti-Gravity** | ✅ 油門急推時暫時提升 Ki | ❌ | 急推油門時機體可能俯仰 / 橫滾 |
+| **馬達輸出去飽和** | ✅ 全速時按比例降低其他馬達保留偏航權威 | ❌ | 全油門時偏航控制力下降 |
+
+---
+
+#### 🟢 較低影響——生態系統與功能完整性
+
+| 功能 | Betaflight | 本韌體 | 備註 |
+|---|---|---|---|
+| OSD（機載顯示） | ✅ MSP DisplayPort | ❌ | 需連接視訊發射器 UART |
+| VTX 控制（SmartAudio / Tramp） | ✅ | ❌ | |
+| GPS 返航 | ✅ 斷訊自動返航 | ❌ | 需 GPS 模組與位置估算 |
+| CLI 完整參數系統 | ✅ 數百個可調參數 | 部分：23 條 USB 指令 | 大多數參數需重新編譯 |
+| 非四軸混控 | ✅ 三軸 / 六軸 / X8 / 自訂 | Quad-X 專用 | 混控器硬編碼 |
+| 黑盒格式相容性 | ✅ Betaflight Blackbox Explorer 直接讀取 | 自訂 32 B 格式 | 需 `decode.py` 轉換 |
+| 遙測協定 | ✅ SPORT / CRSF / LTM | 部分：MSP v1 | |
+| DShot 特殊指令 | ✅ 蜂鳴 / 儲存設定 / 方向反轉 | 部分：框架已建立 | |
+
+---
+
+### 優先建議實作的三項功能
+
+若要縮短與 Betaflight 飛行體驗的差距，建議依以下優先順序實作：
+
+| 優先順序 | 功能 | 修改檔案 | 效益 |
+|:---:|---|---|---|
+| 1 | **前饋控制（Feedforward）** | `control/pid_controller.h/.cpp`、`config.h` | 消除搖桿追蹤延遲，競速體驗提升最顯著 |
+| 2 | **積分項鬆弛（I-term Relax）** | `control/pid_controller.cpp` | 消除翻滾 / 急打舵後的彈回 |
+| 3 | **空氣模式（Airmode）** | `RP2354A_FC.ino`（馬達混控區段） | 低油門時維持完整控制權威 |
+
+僅實作這三項，飛行手感即可在絕大多數非競速場景中達到與 Betaflight 相近的水準。
+
+---
+
+### 綜合能力定位
+
+| 使用場景 | 本韌體 | Betaflight |
+|---|---|---|
+| 教育 / 研究平台 | ✅ 優秀 | 對此用途過於複雜 |
+| 空拍 / 穩定懸停 | ✅ 完全勝任 | ✅ |
+| 高度保持 / 初學者飛行 | ✅ 完全勝任 | ✅ |
+| 一般自由飛（Freestyle） | ⚠️ 缺少 I-term Relax 與 Airmode | ✅ |
+| 競速 FPV | ⚠️ 缺少前饋、Anti-Gravity、TPA | ✅ |
+| 與 Betaflight 完整功能對等 | 約 65 % | ✅ 100 % |
+
+> **結論：** 就本韌體的設計定位——RB-RP2354A 教育研究平台——目前的實作已相當完整且具有代表性。架構上的完整性（雙核心分離、PIO DShot、RPM 濾波、MSP 協定、完整 CRSF 解碼）足以作為現代飛控韌體技術的完整教學載體。與 Betaflight 的差距集中在競速性能調整功能（前饋、I-term Relax、Anti-Gravity、TPA、Airmode），這些功能對教育目的而言是極佳的**進階實作題目**，而非本韌體的缺失。
+
+---
+
+
 ## 附錄 A：CMSIS-DSP FFT @ ~8 Hz 動態陷波更新機制說明
 
 > 本附錄對應第 2 節雙核心架構表格中 **\*** 標記的項目：  
